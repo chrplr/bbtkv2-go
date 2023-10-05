@@ -84,9 +84,9 @@ func NewBbtkv2(portAddress string, baudrate int) (*bbtkv2, error) {
 	/* We might need to set timeout, writetimeout, xonxoff=False, rtscts=False,  dsrdtr=False, */
 
 	box.port = port
-	box.port.SetDTR(false)
-	box.port.SetRTS(false)
-	box.port.SetReadTimeout(time.Second)
+	// box.port.SetDTR(false)
+	// box.port.SetRTS(false)
+	// box.port.SetReadTimeout(time.Second)
 
 	box.reader = bufio.NewReader(port)
 
@@ -193,11 +193,10 @@ func (b bbtkv2) IsAlive() (bool, error) {
 
 }
 
-// Set smoothing to Opto and Mic sensors.
+// SetSmoothing on Opto and Mic sensors.
 // When smoothing is 'off', the BBTK will detect *all* leading edges, e.g.
 // each refresh on a CRT.
 // When smoothing is 'on', you need to subtract 20ms from offset times.
-// :param mask: a string with 8 bits “Mic1:Mic2:Opto4:Opto3:Opto2:Opto1:NA:NA“
 func (b bbtkv2) SetSmoothing(mask smoothingMask) error {
 	if err := b.SendCommand("SMOO"); err != nil {
 		return fmt.Errorf("SetSmoothing: %w", err)
@@ -281,21 +280,33 @@ func (b bbtkv2) AdjustThresholds() {
 
 func (b bbtkv2) ClearTimingData() {
 	b.SendCommand("SPIE")
+
 	response, err := b.ReadLine()
+	if err != nil {
+		log.Fatalf("ClearTimingData: %w", err)
+	}
+	if response != "FRMT;" {
+		log.Printf("Warning: ClearTimingData expected \"FRMT;\", got \"%v\"", response)
+	}
+
+	response, err = b.ReadLine()
 	if err != nil {
 		log.Fatalf("ClearTimingData: %w", err)
 	}
 
 	for response != "DONE;" {
 		if DEBUG {
-			log.Printf("Adjusting Threshold: expecting \"Done;\", got \"%v\"", response)
+			log.Printf("Warning: ClearTimingData expected \"DONE;\", got \"%v\"", response)
 		}
+
 		time.Sleep(100. * time.Millisecond)
 		response, err = b.ReadLine()
 		if err != nil {
 			log.Fatalf("ClearTimingData: %w", err)
 		}
 	}
+
+	time.Sleep(time.Second)
 }
 
 func (b bbtkv2) DisplayInfoOnBBTK() {
@@ -319,20 +330,61 @@ func (b bbtkv2) SetDefaultsThresholds() {
 }
 
 // Launches a digital data capture session.
+// duration in seconds
 func (b bbtkv2) CaptureEvents(duration int) string {
-	var n int
 	var err error
 
-	durationmicros := duration * int(time.Microsecond)
+	b.SendCommand("DSCM")
+	time.Sleep(100 * time.Millisecond)
+	b.SendCommand("TIML")
+	b.SendCommand(fmt.Sprintf("%d", duration*1000000))
+	err = b.SendCommand("RUDS")
 
-	n, err = b.port.Write([]byte(fmt.Sprintf("DSCM\r\nTIML\r\n%d\r\nRUDS\r\n", durationmicros)))
+	// n, err = b.port.Write([]byte(fmt.Sprintf("DSCM\r\nTIML\r\n%d\r\nRUDS\r\n", durationmicros)))
 	if err != nil {
 		log.Printf("CaptureEvents: %w", err)
-	} else {
-		fmt.Println(n)
 	}
 
-	time.Sleep(time.Duration(duration) * time.Second)
+	//waitingDuration := time.Duration(duration-1) * time.Second
+	//time.Sleep(waitingDuration)
+
+	if DEBUG {
+		fmt.Println("Waiting for data")
+	}
+
+	text := ""
+	buff := make([]byte, 100)
+	b.port.SetReadTimeout(time.Second)
+	for {
+		fmt.Print("+")
+		n, err := b.port.Read(buff)
+		if err != nil {
+			log.Fatal(err)
+			break
+		}
+		if n > 0 {
+			fmt.Printf("%v", string(buff[:n]))
+			text += string(buff[:n])
+		}
+	}
+
+	/* 	output := ""
+	   	b.port.SetReadTimeout(2 * time.Second)
+	   	inp, err := b.ReadLine() // we should get "SDAT;"
+	   	if err != nil {
+	   		log.Print("shit!")
+	   	}
+
+	   	for inp != "EDAT;" {
+	   		output += b.port.ResetInputBuffer().Error()
+	   		inp, err = b.ReadLine()
+	   		if err != nil {
+	   			log.Print("shit!")
+	   		}
+
+	   	}
+	*/
+	return text
 
 	/* text = self.get_response(5)
 	   if output_file is not None:
@@ -348,8 +400,6 @@ func (b bbtkv2) CaptureEvents(duration int) string {
 	   print("Total number of events=", len(events))
 	   return text
 	*/
-
-	return "Ok"
 }
 
 func main() {
@@ -359,11 +409,14 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+	defer b.Disconnect()
+
+	b.SendBreak()
+	time.Sleep(time.Second)
 
 	if err = b.Connect(); err != nil {
-		log.Printf("Connect returned: %w\n", err)
+		log.Fatalf("Connect returned: %w\n", err)
 	}
-	defer b.Disconnect()
 
 	fmt.Printf("...Ok\n")
 
@@ -378,22 +431,21 @@ func main() {
 		}
 	}
 
+	b.DisplayInfoOnBBTK()
+
 	fmt.Printf("Firmware version: %v\n", b.GetFirmwareVersion())
 
-	if err = b.SetSmoothing(defaultSmoothingMask); err == nil {
-		fmt.Printf("Smoothing mask set to %+v\n", defaultSmoothingMask)
-	} else {
+	fmt.Printf("Setting Smoothing mask to %+v\n", defaultSmoothingMask)
+	if err = b.SetSmoothing(defaultSmoothingMask); err != nil {
 		log.Printf("%w", err)
 	}
 
 	fmt.Printf("Setting thresholds: %+v\n", defaultThresholds)
 	b.SetDefaultsThresholds()
 
-	b.DisplayInfoOnBBTK()
-
-	fmt.Printf("Clearing Timing data... ")
-	b.ClearTimingData()
-	fmt.Println("Ok")
+	// fmt.Printf("Clearing Timing data... ")
+	// b.ClearTimingData()
+	// fmt.Println("Ok")
 
 	time.Sleep(1 * time.Second)
 
@@ -404,12 +456,4 @@ func main() {
 		log.Println(err)
 	}
 
-}
-
-func newFunction(b *bbtkv2, err error) {
-	b.SendBreak()
-
-	if err = b.Flush(); err != nil {
-		log.Printf("Flush returned: %w\n", err)
-	}
 }
