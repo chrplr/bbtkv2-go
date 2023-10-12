@@ -5,19 +5,20 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 
 	//"log"
+	"strings"
 	"time"
-	//"strings"
 
 	"go.bug.st/serial"
 )
 
-const (
+var (
 	portAddress = "/dev/ttyACM0"
-	baudrate    = 57400
+	baudrate    = 57600
 	DEBUG       = true
 )
 
@@ -76,9 +77,16 @@ func NewBbtkv2(portAddress string, baudrate int) (*bbtkv2, error) {
 		StopBits: serial.OneStopBit,
 	}
 
+	if DEBUG {
+		fmt.Printf("Trying to connect to %v at %dbps...", portAddress, baudrate)
+	}
 	port, err := serial.Open(portAddress, mode)
 	if err != nil {
 		return nil, fmt.Errorf("Error while trying to open bbtkv2 at %s at %d bps: %w\n", portAddress, baudrate, err)
+	}
+
+	if DEBUG {
+		fmt.Println("Success!")
 	}
 
 	/* We might need to set timeout, writetimeout, xonxoff=False, rtscts=False,  dsrdtr=False, */
@@ -86,7 +94,7 @@ func NewBbtkv2(portAddress string, baudrate int) (*bbtkv2, error) {
 	box.port = port
 	// box.port.SetDTR(false)
 	// box.port.SetRTS(false)
-	// box.port.SetReadTimeout(time.Second)
+	box.port.SetReadTimeout(time.Second)
 
 	box.reader = bufio.NewReader(port)
 
@@ -95,6 +103,10 @@ func NewBbtkv2(portAddress string, baudrate int) (*bbtkv2, error) {
 
 // Connect initiates a connection to the BBTKv2.
 func (b bbtkv2) Connect() error {
+
+	if DEBUG {
+		fmt.Printf("Trying to connect to bbtkv2...")
+	}
 
 	b.SendCommand("CONN")
 
@@ -106,6 +118,10 @@ func (b bbtkv2) Connect() error {
 	}
 	if resp != "BBTK;" {
 		return fmt.Errorf("Connect: expected \"BBTK;\", got \"%v\"", resp)
+	}
+
+	if DEBUG {
+		fmt.Println("Success!")
 	}
 	return nil
 }
@@ -124,13 +140,13 @@ func (b bbtkv2) SendBreak() {
 }
 
 func (b bbtkv2) SendCommand(cmd string) error {
-	if err := b.port.ResetInputBuffer(); err != nil {
+	/* if err := b.port.ResetInputBuffer(); err != nil {
 		return err
 	}
 
 	if err := b.port.ResetOutputBuffer(); err != nil {
 		return err
-	}
+	} */
 
 	if DEBUG {
 		log.Printf("SendCommand: \"%v\"\n", cmd)
@@ -333,30 +349,43 @@ func (b bbtkv2) SetDefaultsThresholds() {
 // duration in seconds
 func (b bbtkv2) CaptureEvents(duration int) string {
 	var err error
+	time.Sleep(time.Second)
+	err = b.SendCommand("DSCM")
+	if err != nil {
+		log.Printf("CaptureEvents: DSCM %w", err)
+	}
 
-	b.SendCommand("DSCM")
-	time.Sleep(100 * time.Millisecond)
-	b.SendCommand("TIML")
-	b.SendCommand(fmt.Sprintf("%d", duration*1000000))
-	err = b.SendCommand("RUDS")
+	time.Sleep(time.Second)
+	err = b.SendCommand("TIML")
+	if err != nil {
+		log.Printf("CaptureEvents: TIML %w", err)
+	}
 
-	// n, err = b.port.Write([]byte(fmt.Sprintf("DSCM\r\nTIML\r\n%d\r\nRUDS\r\n", durationmicros)))
+	time.Sleep(time.Second)
+	err = b.SendCommand(fmt.Sprintf("%d", duration*1000000))
 	if err != nil {
 		log.Printf("CaptureEvents: %w", err)
 	}
 
-	//waitingDuration := time.Duration(duration-1) * time.Second
-	//time.Sleep(waitingDuration)
+	time.Sleep(time.Second)
+	time.Sleep(500 * time.Millisecond)
+	err = b.SendCommand("RUDS")
+	if err != nil {
+		log.Printf("CaptureEvents: RUDS %w", err)
+	}
+
+	waitingDuration := time.Duration(duration-1) * time.Second
+	time.Sleep(waitingDuration)
 
 	if DEBUG {
-		fmt.Println("Waiting for data")
+		fmt.Println("Waiting for data...")
 	}
 
 	text := ""
 	buff := make([]byte, 100)
-	b.port.SetReadTimeout(time.Second)
+	//b.port.SetReadTimeout(time.Second)
 	for {
-		fmt.Print("+")
+
 		n, err := b.port.Read(buff)
 		if err != nil {
 			log.Fatal(err)
@@ -365,6 +394,9 @@ func (b bbtkv2) CaptureEvents(duration int) string {
 		if n > 0 {
 			fmt.Printf("%v", string(buff[:n]))
 			text += string(buff[:n])
+		}
+		if strings.Contains(string(buff), "EDAT") {
+			break
 		}
 	}
 
@@ -404,8 +436,12 @@ func (b bbtkv2) CaptureEvents(duration int) string {
 
 func main() {
 
-	fmt.Printf("Trying to connect to %v at %v...\n", portAddress, baudrate)
-	b, err := NewBbtkv2(portAddress, baudrate)
+	portPtr := flag.String("D", portAddress, "device (serial port name)")
+	speedPtr := flag.Int("b", baudrate, "baudrate (speed in bps)")
+
+	flag.Parse()
+
+	b, err := NewBbtkv2(*portPtr, *speedPtr)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -418,9 +454,7 @@ func main() {
 		log.Fatalf("Connect returned: %w\n", err)
 	}
 
-	fmt.Printf("...Ok\n")
-
-	var alive bool
+	/* var alive bool
 	if alive, err = b.IsAlive(); err != nil {
 		log.Println(err)
 	} else {
@@ -429,20 +463,20 @@ func main() {
 		} else {
 			fmt.Println("BBTKv2 not responding to ECHO")
 		}
-	}
+	} */
 
-	b.DisplayInfoOnBBTK()
+	// b.DisplayInfoOnBBTK()
 
-	fmt.Printf("Firmware version: %v\n", b.GetFirmwareVersion())
+	//fmt.Printf("Firmware version: %v\n", b.GetFirmwareVersion())
 
-	fmt.Printf("Setting Smoothing mask to %+v\n", defaultSmoothingMask)
+	/* fmt.Printf("Setting Smoothing mask to %+v\n", defaultSmoothingMask)
 	if err = b.SetSmoothing(defaultSmoothingMask); err != nil {
 		log.Printf("%w", err)
 	}
 
 	fmt.Printf("Setting thresholds: %+v\n", defaultThresholds)
 	b.SetDefaultsThresholds()
-
+	*/
 	// fmt.Printf("Clearing Timing data... ")
 	// b.ClearTimingData()
 	// fmt.Println("Ok")
