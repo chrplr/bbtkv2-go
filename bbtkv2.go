@@ -1,5 +1,6 @@
 // Drive a BlackBoxToolKit v2 to capture events
 // Author: Christophe Pallier <christophe@pallier.org>
+// LICENSE: GPL-3.0
 
 package main
 
