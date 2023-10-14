@@ -16,10 +16,12 @@ import (
 	"go.bug.st/serial"
 )
 
+// default parameters
 var (
 	portAddress = "/dev/ttyACM0"
 	baudrate    = 57600
-	DEBUG       = true
+	duration    = 30
+	DEBUG       = false
 )
 
 type bbtkv2 struct {
@@ -89,13 +91,11 @@ func NewBbtkv2(portAddress string, baudrate int) (*bbtkv2, error) {
 		fmt.Println("Success!")
 	}
 
-	/* We might need to set timeout, writetimeout, xonxoff=False, rtscts=False,  dsrdtr=False, */
+	port.SetReadTimeout(time.Second)
+	// port.SetDTR(false)
+	// port.SetRTS(false)
 
 	box.port = port
-	// box.port.SetDTR(false)
-	// box.port.SetRTS(false)
-	box.port.SetReadTimeout(time.Second)
-
 	box.reader = bufio.NewReader(port)
 
 	return &box, nil
@@ -139,14 +139,16 @@ func (b bbtkv2) SendBreak() {
 	time.Sleep(time.Second)
 }
 
-func (b bbtkv2) SendCommand(cmd string) error {
-	/* if err := b.port.ResetInputBuffer(); err != nil {
+func (b bbtkv2) ResetSerialBuffers() error {
+	if err := b.port.ResetInputBuffer(); err != nil {
 		return err
 	}
 
-	if err := b.port.ResetOutputBuffer(); err != nil {
-		return err
-	} */
+	return b.port.ResetOutputBuffer()
+}
+
+// SendCommand adds CRLF to cmd and send it to the BBTK
+func (b bbtkv2) SendCommand(cmd string) error {
 
 	if DEBUG {
 		log.Printf("SendCommand: \"%v\"\n", cmd)
@@ -159,6 +161,7 @@ func (b bbtkv2) SendCommand(cmd string) error {
 	return err
 }
 
+// ReadLine returns the next line output by the BBTK
 func (b bbtkv2) ReadLine() (string, error) {
 	var s string
 	var err error
@@ -188,7 +191,7 @@ func (b bbtkv2) ReadLine() (string, error) {
 	}
 */
 
-// IsAlive sends an 'ECHO' command to the BBTKv2 and expects an 'ECHO' in return.
+// IsAlive sends an 'ECHO' command to the BBTKv2 and expects 'ECHO' in return.
 // This permits to check that the BBTKv2 is up and running.
 func (b bbtkv2) IsAlive() (bool, error) {
 
@@ -265,6 +268,8 @@ func (b bbtkv2) SetSmoothing(mask smoothingMask) error {
 	return nil
 }
 
+// FLUS command attempts to clear the USB output buffer.
+// If this fails you may need to send a Serial Break with SendBreak().
 func (b bbtkv2) Flush() error {
 	if err := b.SendCommand("FLUS"); err != nil {
 		return err
@@ -273,6 +278,8 @@ func (b bbtkv2) Flush() error {
 	return nil
 }
 
+// Retrieves the version of the BBTK firmware
+// currently running in the ARM chip.
 func (b bbtkv2) GetFirmwareVersion() string {
 	b.SendCommand("FIRM")
 	resp, err := b.ReadLine()
@@ -282,6 +289,7 @@ func (b bbtkv2) GetFirmwareVersion() string {
 	return resp
 }
 
+// AdjustThresholds launches the procedure to manually set up the thresholds on the BBTK
 func (b bbtkv2) AdjustThresholds() {
 	b.SendCommand("AJPV")
 	response, _ := b.ReadLine()
@@ -294,6 +302,9 @@ func (b bbtkv2) AdjustThresholds() {
 	}
 }
 
+// ClearTimingData either formats the whole of the BBTK's internal
+// RAM (on first power up or after a reset) or erases
+// only previously used sectors.
 func (b bbtkv2) ClearTimingData() {
 	b.SendCommand("SPIE")
 
@@ -301,8 +312,8 @@ func (b bbtkv2) ClearTimingData() {
 	if err != nil {
 		log.Fatalf("ClearTimingData: %w", err)
 	}
-	if response != "FRMT;" {
-		log.Printf("Warning: ClearTimingData expected \"FRMT;\", got \"%v\"", response)
+	if response != "FRMT;" && response != "ESEC;" {
+		log.Printf("Warning: ClearTimingData expected \"FRMT;\" or \"ESEC;\", got \"%v\"", response)
 	}
 
 	response, err = b.ReadLine()
@@ -325,13 +336,19 @@ func (b bbtkv2) ClearTimingData() {
 	time.Sleep(time.Second)
 }
 
+// DisplayInfoOnBBTK causes the BBTK to display a copyright notice
+// and release date of the firmware it is running on its LCD screen.
 func (b bbtkv2) DisplayInfoOnBBTK() {
 	b.SendCommand("ABOU")
 	time.Sleep(1. * time.Second)
 }
 
-func (b bbtkv2) SetDefaultsThresholds() {
-	x := defaultThresholds
+// Sets the sensor activation thresholds for the eight
+// adjustable lines, i.e. Mic activation threshold,
+// Sounder volume (amplitude) and Opto luminance
+// activation threshold. Activation thresholds range
+// from 0-127.
+func (b bbtkv2) SetThresholds(x thresholds) {
 	b.SendCommand("SEPV")
 	b.SendCommand(fmt.Sprintf("%d", x.Mic1))
 	b.SendCommand(fmt.Sprintf("%d", x.Mic2))
@@ -343,6 +360,10 @@ func (b bbtkv2) SetDefaultsThresholds() {
 	b.SendCommand(fmt.Sprintf("%d", x.Opto4))
 
 	time.Sleep(1 * time.Second)
+}
+
+func (b bbtkv2) SetDefaultsThresholds() {
+	b.SetThresholds(defaultThresholds)
 }
 
 // Launches a digital data capture session.
@@ -436,10 +457,14 @@ func (b bbtkv2) CaptureEvents(duration int) string {
 
 func main() {
 
-	portPtr := flag.String("D", portAddress, "device (serial port name)")
+	portPtr := flag.String("p", portAddress, "device (serial port name)")
 	speedPtr := flag.Int("b", baudrate, "baudrate (speed in bps)")
+	durationPtr := flag.Int("d", duration, "duration of capture (in s)")
+	debugPtr := flag.Bool("v", DEBUG, "verbose (set to 'true' to debug)")
 
 	flag.Parse()
+
+	DEBUG = *debugPtr
 
 	b, err := NewBbtkv2(*portPtr, *speedPtr)
 	if err != nil {
@@ -450,11 +475,22 @@ func main() {
 	b.SendBreak()
 	time.Sleep(time.Second)
 
+	err = b.ResetSerialBuffers()
+	if err != nil {
+		log.Printf("ResetSerialIOBuff %v\n", err)
+	}
+
 	if err = b.Connect(); err != nil {
 		log.Fatalf("Connect returned: %w\n", err)
 	}
+	time.Sleep(time.Second)
 
-	/* var alive bool
+	err = b.ResetSerialBuffers()
+	if err != nil {
+		log.Printf("ResetSerialIOBuff %v\n", err)
+	}
+
+	var alive bool
 	if alive, err = b.IsAlive(); err != nil {
 		log.Println(err)
 	} else {
@@ -463,28 +499,29 @@ func main() {
 		} else {
 			fmt.Println("BBTKv2 not responding to ECHO")
 		}
-	} */
+	}
+	time.Sleep(time.Second)
 
 	// b.DisplayInfoOnBBTK()
 
 	//fmt.Printf("Firmware version: %v\n", b.GetFirmwareVersion())
 
-	/* fmt.Printf("Setting Smoothing mask to %+v\n", defaultSmoothingMask)
+	fmt.Printf("Setting Smoothing mask to %+v\n", defaultSmoothingMask)
 	if err = b.SetSmoothing(defaultSmoothingMask); err != nil {
 		log.Printf("%w", err)
 	}
+	time.Sleep(time.Second)
 
 	fmt.Printf("Setting thresholds: %+v\n", defaultThresholds)
 	b.SetDefaultsThresholds()
-	*/
-	// fmt.Printf("Clearing Timing data... ")
-	// b.ClearTimingData()
-	// fmt.Println("Ok")
+
+	time.Sleep(time.Second)
+	fmt.Printf("Clearing Timing data... ")
+	b.ClearTimingData()
+	fmt.Println("Ok")
 
 	time.Sleep(1 * time.Second)
-
-	fmt.Println("Capturing events...")
-	fmt.Println(b.CaptureEvents(10))
+	fmt.Println(b.CaptureEvents(*durationPtr))
 
 	if err = b.Disconnect(); err != nil {
 		log.Println(err)
